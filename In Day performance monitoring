@@ -1,0 +1,944 @@
+//v 0.20 - 
+
+//BAS latest features, Slack integration, Onetime script runs and error catching in main function
+
+//****THIS PART OF THE SCRIPT GETS ALL RELEVENT ACCOUNTS & SETTINGS AND ITERATES THROUGH THEM
+
+//**
+var MASTER_STR = "";
+
+//**CONTSTANTS FOR ACCOUNT SELECTOR
+var SPREADSHEET_URL = 'https://docs.google.com/a/kinasesearch.co.uk/spreadsheets/d/1RWdv-dcjn0CTIhkxhJlfjJq050AxNHGm_kb599Z0VCI/edit?usp=sharing';
+
+//**SCRIPT-SPECIFIC CONSTANTS.  VARIABLE NAMES MUST NOT CHANGE.
+var SPREADSHEET_RANGE = "AAD";
+var SPREADSHEET_OPTIONS = "AAD_DETAILS";
+
+var MaxRows = 40;
+
+//**MAIN - SCRIPT SELECTOR
+function main() {
+  
+   var masterSpreadsheet = SpreadsheetApp.openByUrl(SPREADSHEET_URL);
+
+  Logger.log("Working...");
+ 
+  var accountDetails  = new Object();
+  accountDetails.ID=""; accountDetails.Name=""; accountDetails.ContactEmail= ""; accountDetails.ContactPhoneNo= ""; accountDetails.Args= "";
+  
+  accountDetails.getArgArray = function() {
+    return this.Args.toString().split("|");
+  }
+  
+  accountDetails.getPhoneNoArray = function() {
+    return this.ContactPhoneNo.toString().split("|");
+  }
+  
+  accountDetails.getEmailArray = function() {
+    return this.ContactEmail.toString().split("|");
+  }
+  
+  var accountDetailsArray = [];
+
+  var rowNo = 0;
+  
+  //These two variables are select the script - specific ranges on spreadsheet
+  
+  var runScriptRange = masterSpreadsheet.getRangeByName(SPREADSHEET_RANGE).getValues();
+  var detailsScriptRange = masterSpreadsheet.getRangeByName(SPREADSHEET_OPTIONS).getValues();
+  var emailRange = masterSpreadsheet.getRangeByName("EmailRange").getValues();
+  var phoneRange = masterSpreadsheet.getRangeByName("NumberRange").getValues();
+  var idRange = masterSpreadsheet.getRangeByName("AccountIDs").getValues();
+  
+  var oneTimeRun = false;
+  var new_range = [];
+  
+  for ( var rowNo = 0;rowNo < MaxRows; rowNo++){
+	var new_row = [runScriptRange[rowNo]].toString();
+    new_range.push(new_row);
+      
+    if (parseInt(runScriptRange[rowNo]) > 0 && idRange[rowNo] != "" ){
+        oneTimeRun = true;
+         
+        var temp_acct = Object.create(accountDetails);
+        
+        temp_acct.ID = idRange[rowNo]; temp_acct.ContactEmail = emailRange[rowNo]; temp_acct.ContactPhoneNo = phoneRange[rowNo]; temp_acct.Args = detailsScriptRange[rowNo];
+        
+        accountDetailsArray.push(temp_acct); 
+         
+		new_range[rowNo] = String(new_range[rowNo]-1); //decrement value if > 0
+           
+        }
+    }
+     
+	if (!oneTimeRun) {
+      //Logger.log("not a one-time run");
+      
+		for ( var rowNo = 0;rowNo<MaxRows;rowNo++){
+			
+			if (runScriptRange[rowNo] == "x" && idRange[rowNo] != "" ){
+
+				var temp_acct = Object.create(accountDetails);
+				temp_acct.ID = idRange[rowNo]; temp_acct.ContactEmail = emailRange[rowNo]; temp_acct.ContactPhoneNo = phoneRange[rowNo]; temp_acct.Args = detailsScriptRange[rowNo];
+				accountDetailsArray.push(temp_acct); 
+			}	
+		}
+  
+	}
+	
+  for (var x = 0; x < accountDetailsArray.length; x++){
+	  
+    var selector = MccApp.accounts().withIds(accountDetailsArray[x].ID).get();
+	var account = selector.next();
+    Logger.log(account.getName() + " >>> " + accountDetailsArray[x].getArgArray() + " " + accountDetailsArray[x].getEmailArray());  
+	
+	//MAIN FUNCTION OF SCRIPT
+    
+    //try {
+		aad_main(account,accountDetailsArray[x].getArgArray(),accountDetailsArray[x].getPhoneNoArray(),accountDetailsArray[x].getEmailArray()); 
+	//} catch (err) {
+	//	Logger.log("Exception caught, skipping to next account.  Error message:");
+	//	Logger.log(err.message);
+   // }
+  }
+    if (oneTimeRun){
+      Logger.log("This was a one-time run");
+		for(var x = 0; x<new_range.length; x++){
+			new_range[x] = new Array(new_range[x]);
+		}
+		Logger.log(new_range);
+		masterSpreadsheet.getRangeByName(SPREADSHEET_RANGE).setValues(new_range);
+    }
+    
+    Logger.log("Account Complete");
+  }
+  
+
+function slack_sendmessage(message) {
+  var slack = new SlackAPI({
+    webhookUrl : "https://hooks.slack.com/services/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" 
+  });
+  if (AdWordsApp.getExecutionInfo().isPreview()){
+    message += " NOTE: this is a message from a preview run and no changes have been made :brill:";
+  }
+  slack.sendMessage({
+    channel: "#adwords_scripts", 
+    username: "adwords-bot", 
+    text: message, 
+    icon_emoji: ":ghost:"
+  });
+}
+
+
+function SlackAPI(config) {
+  this.webhookUrl = config.webhookUrl;
+
+  // Send a message to slack. The config can 
+  // be as simple as a string or an object
+  // for passing more complex messages.
+  this.sendMessage = function(config) {
+    if(typeof config == 'object') {
+      postToSlack(this.webhookUrl, config);
+    } else {
+      postToSlack(this.webhookUrl, { text : config });
+    }
+  };
+  
+  // Take care of all the messy stuff like
+  // retries and status codes.
+  function postToSlack(url, payload) {
+    var options = {
+      method: 'POST',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    var retries = 3;
+    while(retries > 0) {
+      try {
+        var resp = UrlFetchApp.fetch(url,options);
+        if(resp.getResponseCode() == 200) {
+          return true;
+        } else {
+          Logger.log(
+            Utilities.formatString(
+              "WARNING: Slack returned status code of %s and a message of: %s",
+              resp.getResponseCode(),
+              resp.getContentText()
+            )
+          );
+          Logger.log('Waiting 1 seconds then retrying...');
+          Utilities.sleep(1000);
+          retries--;
+        }
+      } catch(e) {
+        Logger.log("ERROR: Something failed in UrlFetchApp. Retrying in 1 second...");
+        Utilities.sleep(1000);
+        retries--;
+      }
+    }
+    throw "Either UrlFetchApp is broken or the Slack Webhook is not configured properly.";
+  }
+};
+
+//------------------------------------------------------------------------------------------------------------------------------------------
+//------------------------------------------------------------------------------------------------------------------------------------------
+//------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+//var yopa_sheet_url = "https://docs.google.com/a/kinasesearch.co.uk/spreadsheets/d/1WIgGVOa05Rv09I1yU0RexLoqzYJ3zNJrVg5KyhkTs4o/edit?usp=sharing";
+var lookback = 5;
+
+function aad_main(ACCOUNT,ACCT_SETTINGS,PhoneAr,EmailAr) {
+  
+  //feed arguments array into temporary variables
+  
+  var t_arg1 = ACCT_SETTINGS[0].toString();
+ 
+  var emailAddresses = EmailAr;
+  var slack_contacts= PhoneAr;
+ 
+  
+   var current_account = ACCOUNT;
+   MccApp.select(current_account);
+  
+  var REPORT_SPREADSHEET_URL = t_arg1;
+
+  var DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday','Saturday'];
+  
+  var Test = false;
+  
+  var spreadsheet = SpreadsheetApp.openByUrl(REPORT_SPREADSHEET_URL);
+  
+  var now = new Date(Utilities.formatDate(new Date(),current_account.getTimeZone(), 'MMM dd,yyyy HH:mm:ss'));
+
+  var lagfactor = 0;
+  
+  var currentDate = now.getDate();
+
+  now.setTime(now.getTime() - lagfactor  * 3600 * 1000);
+  var adjustedDate = now.getDate();
+
+  var hours = now.getHours();
+  if (hours == 0) {
+    hours = 24;
+  }
+ 
+  if (hours == 1) {
+    // first run of the day, kill existing alerts
+    spreadsheet.getRangeByName('sheet_today').clearContent();
+    spreadsheet.getRangeByName('sheet_previous').clearContent();
+    
+  }
+  var dayToCheck = adjustedDate;
+ 
+  
+  
+  
+  //pull in override values ----
+  var today_date_obj = new AWDate;
+  
+  var today_date = today_date_obj.formatDate(now, hours); 
+  Logger.log(today_date.getUKDateStr());
+  
+
+  var expected_today = [];
+  
+//  Logger.log(override_dates[1].dd);
+//  Logger.log(expected_today);
+  
+  expected_today = expected_today.sort(hourSort);
+  
+  var hour_check_report  = AdWordsApp.report('SELECT HourOfDay, Cost FROM ACCOUNT_PERFORMANCE_REPORT DURING TODAY');
+ 
+  var hour_count = 0;
+  var hc_rows = hour_check_report.rows();
+  var hourCostList = [];
+  while (hc_rows.hasNext()){
+    var tempRow = hc_rows.next();
+    var tempStatObject = new hourStatObject(tempRow['HourOfDay'],tempRow['Cost']);
+    hourCostList.push(tempStatObject);
+    hour_count++;
+  }
+  
+  hour_count--;
+  
+  hourCostList = hourCostList.sort(hourSort);
+  
+ // hour_count is the latest hour from AW
+  
+  var delay_hour = 1;
+  
+  hour_count = hour_count - delay_hour  ;
+  
+  if(hour_count < 0){
+    return;
+  }
+
+  // get lookback
+  
+  var lookback      = parseFloat(spreadsheet.getRangeByName('option_lookback').getValue());
+  
+  try {
+    var lookback_type = spreadsheet.getRangeByName('option_lookback_type').getValue().toString();
+  } catch (err) {
+    var lookback_type = "Weeks";
+    Logger.log("Sheet does not support period types, please update sheet");
+  }
+  
+  var lookback_str = "";
+  var lookback_multiple = 1;
+  
+  switch (lookback_type){
+    case "Days":
+      lookback_str = "days";
+      lookback_multiple = 1;
+      break;
+    case "Weeks":
+      lookback_str = "of this day";
+      lookback_multiple = 7;
+      break;
+    case "Months (30 days)":
+      lookback_str = "of this day (month/30 days gap)";
+      lookback_multiple = 30;
+      break;
+    case "Years (365 days)":
+      lookback_str = "of this day (per year)";
+      lookback_multiple = 365;
+      break;
+  }
+  
+  Logger.log("Using the last " + lookback + " " +  lookback_str + " for historical comparison");
+  
+  spreadsheet.getRangeByName('sheet_historic_data_label').setValue(["Historical data: (last " + lookback + " " + lookback_str + ")"]);
+  
+  var real_today = [];
+  
+
+  var all_day_fields = 'Clicks,Cost,Conversions';
+  
+  var today = AdWordsApp.report('SELECT HourOfDay,' + all_day_fields +  ' FROM ACCOUNT_PERFORMANCE_REPORT DURING ' + 'TODAY');
+
+  var rows = today.rows();
+  while (rows.hasNext()){ 
+    var row = rows.next();
+ 
+     //real_today.push(new hourStatObject(today_date.hour,  row['Cost'], row['Impressions'], row['Clicks'], row['AllConversionValue'])); //make this not an array
+    real_today.push(new hourStatObject(row['HourOfDay'],  row['Cost'], row['Clicks'], row['Conversions'])); //make this not an array
+
+  }
+  
+  real_today = real_today.sort(hourSort);
+  
+  
+  
+  var sheet_today_prep = [];
+  
+  //create blank array to add in vars
+  for (var i = 0; i < 24; i++){
+	  sheet_today_prep.push(["0", "0", "0","0"]);  
+  }
+  
+  //overwrite with real vals if available
+  for (var i = 0; i < real_today.length; i++){
+	  var temp_ob = real_today[i];   
+	  sheet_today_prep[i] = [temp_ob.cost, temp_ob.clicks, temp_ob.conv, "0"];
+  }
+  
+  spreadsheet.getRangeByName('sheet_today').setValues(sheet_today_prep);
+  
+  
+  
+  //-------------------------------------------------
+  // get previous data
+  
+    var prev_data_total = [];
+	var weeks_in_past = lookback;
+	var all_day_fields = 'Clicks,Cost,Conversions';
+	//var date_in_past = // complete me!
+  
+	for (var i = 0; i < weeks_in_past; i++){
+		
+		date_in_past = get_day_in_past_AWQL(today_date, i + 1, lookback_multiple);
+		
+		var one_day = AdWordsApp.report('SELECT HourOfDay,' + all_day_fields +  ' FROM ACCOUNT_PERFORMANCE_REPORT DURING ' + date_in_past + "," + date_in_past);
+
+		var rows = one_day.rows();
+        var prev_data_one_day = [];
+		while (rows.hasNext()){ 
+			var row = rows.next();
+			prev_data_one_day.push(new hourStatObject(row['HourOfDay'],  row['Cost'], row['Clicks'], row['Conversions'])); //make this not an array
+
+		}
+      if( i == 0) { 
+        prev_data_total = prev_data_one_day;
+      } else{
+		prev_data_total = add_data_array(prev_data_total, prev_data_one_day);
+      }
+  
+	}
+  
+  prev_data_total = div_data_array(prev_data_total, weeks_in_past);
+  function get_day_in_past_AWQL(today_date, weeks_back, lookback_multi){
+	 
+      var new_date_JS = new Date(today_date.yyyy, (today_date.mm - 1), today_date.dd, 0 , 0 , 0 , 0);
+    
+      new_date_JS = new Date(new_date_JS.setDate(new_date_JS.getDate() - (weeks_back * lookback_multi)));
+	  Logger.log(new_date_JS.getYear()); 
+    
+    
+    var month_temp = (new_date_JS.getMonth() + 1).toString();
+    var date_temp = (new_date_JS.getDate()).toString();
+    
+    Logger.log(month_temp.length);
+    
+    if (month_temp.length == 1){
+      month_temp = "0" + month_temp.toString();
+    }
+    
+    if (date_temp.length == 1){
+      date_temp = "0" + date_temp.toString();
+    }
+    
+    var date_parts = [new_date_JS.getYear().toString(), month_temp, date_temp];
+      var new_date_AWQL = date_parts.join("");
+
+       Logger.log(new_date_JS);    
+       Logger.log(new_date_AWQL);
+	  return new_date_AWQL;
+  }
+  
+  function add_data_array (a, b){
+	  a = a.sort(hourSort);
+	  b = b.sort(hourSort);
+      
+	  for (var x = 0; x < a.length; x++){
+		  var temp = new hourStatObject(0,0,0,0);
+		  
+		  temp.hour 	= a.hour;
+		  temp.clicks 	= parseFloat(a[x].clicks) + parseFloat(b[x].clicks);
+		  temp.cost 	= parseFloat(a[x].cost) + parseFloat(b[x].cost);
+		  temp.conv 	= parseFloat(a[x].conv) + parseFloat(b[x].conv);
+		  a[x] = temp;
+		  
+	  }
+	  
+	  return a;
+	  
+  }
+  
+    function div_data_array (a, d){
+	  a = a.sort(hourSort);
+      
+	  for (var x = 0; x < a.length; x++){
+		  var temp = new hourStatObject(0,0,0,0);
+		  
+		  temp.hour 	= a.hour;
+		  temp.clicks 	= parseFloat(a[x].clicks) / d;
+		  temp.cost 	= parseFloat(a[x].cost) / d;
+		  temp.conv 	= parseFloat(a[x].conv) / d;
+		  a[x] = temp;
+		  
+	  }
+	  
+	  return a;
+	  
+  }
+  
+  var sheet_previous_prep = [];
+  
+    //create blank array to add in vars
+  for (var i = 0; i < 24; i++){
+	  sheet_previous_prep.push(["0", "0", "0","0"]);  
+  }
+  
+  //overwrite with real vals if available
+  for (var i = 0; i < prev_data_total.length; i++){
+	  var temp_ob = prev_data_total[i];   
+	  sheet_previous_prep[i] = [temp_ob.cost, temp_ob.clicks, temp_ob.conv, "0"];
+  }
+  
+  spreadsheet.getRangeByName('sheet_previous').setValues(sheet_previous_prep);
+  
+  Logger.log(sheet_previous_prep);
+  
+
+  
+  // alert time!
+  
+  var alert_tolerances = spreadsheet.getRangeByName('alert_tolerances').getValues();
+  var deltas =           spreadsheet.getRangeByName('deltas').getValues();
+  var actuals_today =    spreadsheet.getRangeByName('actuals_today').getValues();
+  
+  Logger.log('deltas');
+ 
+  Logger.log(deltas);
+  Logger.log(alert_tolerances);
+  
+  // Arrays look like: % delta, flat, real
+  
+  var alert_cpc =    [remove_alert_tolerances_formatting_text(alert_tolerances[0][1]), alert_tolerances[0][2], parseFloat(deltas[1][4]), parseFloat(actuals_today[1][4])];
+  var alert_clicks = [remove_alert_tolerances_formatting_text(alert_tolerances[1][1]), alert_tolerances[1][2], parseFloat(deltas[1][1]), parseFloat(actuals_today[1][1])];
+  var alert_cost =   [remove_alert_tolerances_formatting_text(alert_tolerances[2][1]), alert_tolerances[2][2], parseFloat(deltas[1][0]), parseFloat(actuals_today[1][0])];
+  
+  function remove_alert_tolerances_formatting_text(__str){
+    
+    var t = "" + __str;
+    
+    var is_percent = false;
+    
+    var _t = t.replace(">+/-","");
+    
+    if (_t != t){
+      is_percent = true;
+      t = _t;
+    }
+    
+    if (t == "No Alert"){
+      return 0; // return 0 for no alert
+    }
+    
+    t = t.replace("%","");
+    t = t.replace("£",""); 
+    
+    t = parseFloat(t);
+
+    if (is_percent){
+      t = t / 100;
+    }
+    
+    return t;
+  }
+  Logger.log("KPI, tolerance delta, tolerance vals, actual delta, actuals vals");
+  Logger.log("cost   " + alert_cost);
+  Logger.log("clicks " + alert_clicks); // < check these
+  Logger.log("cpc    " + alert_cpc);
+  
+  // evaluate vals & deltas
+  
+  var alert_str = "";
+  
+  function evaluate_metric(tolerance, x){
+   
+    if (tolerance === 0) {return false;}
+    
+   var sign_tol = tolerance > 0 ? 1 : -1;
+   var sign_x   = x > 0         ? 1 : -1;
+    
+   var abs_tol = Math.abs(tolerance);
+   var abs_x   = Math.abs(x);
+    
+   if (sign_x !== sign_tol) {return false;}
+    
+    if (abs_x > abs_tol) { 
+      Logger.log(tolerance + " + " + x);
+      return true;
+    }
+    
+  }
+  
+  if  (evaluate_metric(alert_cost[0], alert_cost[2])){
+    alert_str += "Cost alert - cost has exceeded the tolerance for today (delta)\n"
+    alert_str += "Tolerance is " + to_percentage(alert_cost[0])+" \n"; 
+  }
+  
+  if  (evaluate_metric(alert_cost[1], alert_cost[3])){
+    alert_str += "Cost alert - cost has exceeded the tolerance for today (flat value)\n"
+    alert_str += "Is £" + alert_cost[3].toFixed(2) + " expected £" + alert_cost[1].toFixed(2) + "\n";
+  }
+  
+  if  (evaluate_metric(alert_clicks[0], alert_clicks[2])){
+    alert_str += "Clicks alert - clicks have exceeded the tolerance for today (delta)\n"
+    alert_str += "Tolerance is " + to_percentage(alert_clicks[0])+" \n"; 
+  }
+  
+  if  (evaluate_metric(alert_clicks[1], alert_clicks[3])){
+    alert_str += "Clicks alert - clicks have exceeded the tolerance for today (flat value)\n"
+    alert_str += "Is " + alert_clicks[3].toFixed(2) + " expected " + alert_clicks[1].toFixed(2) + "\n";
+  }
+  
+  if  (evaluate_metric(alert_cpc[0], alert_cpc[2])){
+    alert_str += "Avg CPC alert - CPC has exceeded the tolerance for today (delta)\n"
+    alert_str += "Tolerance is " + to_percentage(alert_cpc[0])+" \n"; 
+  }
+  
+  if  (evaluate_metric(alert_cpc[1], alert_cpc[3])){
+    alert_str += "Avg CPC alert - CPC has exceeded the tolerance for today (flat value)\n"
+    alert_str += "Is " + alert_cpc[3].toFixed(2) + " expected " + alert_cpc[1].toFixed(2) + "\n";
+  }
+  
+  Logger.log(alert_str);
+  
+  var alerts_exist = false;
+  
+  if (alert_str.length > 1){
+    alerts_exist = true;
+  }
+   
+  function to_percentage(i){
+    var p = i.toFixed(2) * 100;
+    return p.toString() + "%";
+  }
+  
+  //read preferences from sheet
+  
+  var option_email_alert =  parse_yes_no(spreadsheet.getRangeByName('option_email_alert').getValues());
+  var option_slack_alert =  parse_yes_no(spreadsheet.getRangeByName('option_slack_alert').getValues());
+  var option_extra_emails =  spreadsheet.getRangeByName('option_extra_emails').getValues().toString().split(",");
+  var option_not_before =  parse_time_option(spreadsheet.getRangeByName('option_not_before').getValues().toString());
+  var option_not_after  =  parse_time_option(spreadsheet.getRangeByName('option_not_after' ).getValues().toString());
+  
+  
+  function parse_yes_no(yes_no_str){
+    var t = yes_no_str.toString()
+    
+    if (t.toUpperCase() == "YES"){
+     return true; 
+    }
+    
+   return false; 
+  }
+  
+  
+ function parse_time_option(time_str){
+    var t = time_str.toString()
+    
+    if (t == "Never Alert"){
+     return -1; 
+    }
+   
+   if (t == "Always Alert"){
+     return 24; 
+    }
+   
+   return parseFloat(t);
+  }
+  
+  var hour_now = hours;
+  
+  
+  spreadsheet.getRangeByName('sheet_last_check').setValue([today_date.getUKDateStr() + "  sheet time:" +spreadsheet.getRangeByName('sheet_override' ).getValues().toString()]);
+                                                           
+                                                           
+    Logger.log("The hour is " + hour_now.toString());
+  
+  if (option_not_before == -1){
+    Logger.log("Script set to never alert");
+    return;
+  } else if (option_not_before == 24){
+    Logger.log("Script set to alert every hour");
+    
+  } else if (!(hour_now > option_not_before && hour_now < option_not_after )){
+    Logger.log("Script set to alert between " + option_not_before.toString() + " and " + option_not_after.toString());
+    return;
+  }
+  
+  
+  if (alerts_exist && option_slack_alert) {
+    
+	var hello = "Hi "
+	  for (var i = 0; i < slack_contacts.length; i++){
+			hello += "@" + slack_contacts[i] + " ";
+	}
+    hello += "\nThis is an auto-message for the " +  AdWordsApp.currentAccount().getName() + " Alert Script. Here are the alerts:\n" + alert_str;
+	//slack_sendmessage(hello);
+   Logger.log(hello);
+  }
+    
+    
+ if (alerts_exist && option_email_alert){
+   Logger.log(option_email_alert);
+      Logger.log(emailAddresses);
+  emailAddresses = emailAddresses.concat(option_extra_emails);
+   
+   
+   Logger.log(emailAddresses);
+  for (var x = 0; x < emailAddresses.length; x++) {
+    Logger.log("Email sent: " + AdWordsApp.currentAccount().getName() + " " + emailAddresses[x]);
+
+      MailApp.sendEmail(emailAddresses[x],'AdWords Account ' + AdWordsApp.currentAccount().getName() + ' Alert.',  alert_str + '\n' + REPORT_SPREADSHEET_URL);
+    }
+
+  }
+  
+  
+    
+  
+  
+  return; // END OF SCRIPT SO FAR
+  
+ var alertStr = [];
+  
+  var matchHour = -1;
+  
+     //  if(parseInt(expected_today[i].clicks) > (parseInt(real_today[0].clicks) * (1 - clicksThreshold))&&(parseInt(expected_today[i].clicks) < (parseInt(real_today[0].clicks) * (1 + clicksThreshold)))){
+  
+  for (var i = 0; i < expected_today.length; i++){
+  //  Logger.log(expected_today[i].hour + " " + today_date.hour);
+    
+    if (expected_today[i].hour == hour_count){ //matched hour 
+      matchHour = hour_count;
+      
+      var range = spreadsheet.getRangeByName('clicks_alert');  
+      if (clicksThreshold == null){continue;} 
+      var expected_lower = expected_today[i].clicks * (1 - clicksThreshold);
+      var expected_upper = expected_today[i].clicks * (1 + clicksThreshold);
+      var actual = real_today[0].clicks;
+      
+      if(actual < expected_lower || actual > expected_upper) {
+   
+        alertStr.push(["Alert for " + parseInt(hour_count) + ":00. Expected " + expected_today[i].clicks + " Clicks (+/- " + Math.abs(parseInt(Math.round((clicksThreshold)*100))) + "%), actual " + actual]); //this is right
+        range.setValue('Alert for ' + hour_count + ':00');
+        
+      }
+    
+    
+      var range = spreadsheet.getRangeByName('cost_alert');
+      if (costThreshold == null){continue;}
+      var expected_lower = expected_today[i].cost * (1 - costThreshold);
+      var expected_upper = expected_today[i].cost * (1 + costThreshold);
+      var actual = real_today[0].cost;
+    
+      if(actual < expected_lower || actual > expected_upper) {
+    
+        alertStr.push(["Alert for " + parseInt(hour_count) + ":00. Expected " + expected_today[i].cost + " Spend (+/- " + Math.abs(parseInt(Math.round((costThreshold)*100))) + "%), actual " + actual]); //this is right
+        range.setValue('Alert for ' + hour_count + ':00');
+      }
+      
+  
+      var range = spreadsheet.getRangeByName('impressions_alert');
+      if (impressionsThreshold == null){continue;}
+      var expected_lower = expected_today[i].impr * (1 - impressionsThreshold);
+      var expected_upper = expected_today[i].impr * (1 + impressionsThreshold);
+      var actual = real_today[0].impr;
+      
+      if(actual < expected_lower || actual > expected_upper) {
+     
+        alertStr.push(["Alert for " + parseInt(hour_count) + ":00. Expected " + expected_today[i].impr + " Impressions (+/- " + Math.abs(parseInt(Math.round((impressionsThreshold)*100))) + "%), actual " + actual]); //this is right
+        range.setValue('Alert for ' + hour_count + ':00');
+      }
+     
+      var range = spreadsheet.getRangeByName('convVal_alert');
+      if (convValThreshold == null){continue;}
+      var expected_lower = expected_today[i].convVal * (1 - convValThreshold);
+      var expected_upper = expected_today[i].convVal * (1 + convValThreshold);
+      var actual = real_today[0].convVal;
+
+      if(actual < expected_lower || actual > expected_upper) {
+      alertStr.push(["Alert for " + parseInt(hour_count) + ":00. Expected " + expected_today[i].convVal + " All Conv Value (+/- " + Math.abs(parseInt(Math.round((convValThreshold)*100))) + "%), actual " + actual]); //this is right
+      range.setValue('Alert for ' + hour_count + ':00');
+      }
+      
+    }
+  }
+  
+  var sheet_no_data_alert = spreadsheet.getRangeByName('no_override_data').getValue();
+ 
+  if (matchHour == -1){
+    Logger.log("No matching date & hour on override sheet");
+
+    if (sheet_no_data_alert == "No"){
+      
+     spreadsheet.getRangeByName('no_override_data').setValue("Yes");
+      
+      alertStr = ["The script cannot find any matching data for expected performance now.  The script will only warn once, please update expected performance data and you continue to receive alerts."];
+  
+    } else {
+      
+      return;
+      
+    }
+  
+  } else {
+    
+    spreadsheet.getRangeByName('no_override_data').setValue("No");
+   
+  }
+  
+  
+  
+  spreadsheet.getRangeByName('aw_impr').setValue(real_today[0].impr.toString());
+  spreadsheet.getRangeByName('aw_clicks').setValue(real_today[0].clicks.toString());
+  spreadsheet.getRangeByName('aw_cost').setValue(real_today[0].cost.toString());
+  spreadsheet.getRangeByName('aw_convVal').setValue(real_today[0].convVal.toString());
+    
+  if (matchHour >= 0){
+  spreadsheet.getRangeByName('ex_impr').setValue(expected_today[matchHour].impr.toString());
+  spreadsheet.getRangeByName('ex_clicks').setValue(expected_today[matchHour].clicks.toString());
+  spreadsheet.getRangeByName('ex_cost').setValue(expected_today[matchHour].cost.toString());
+  spreadsheet.getRangeByName('ex_convVal').setValue(expected_today[matchHour].convVal.toString());
+  }       
+  
+  spreadsheet.getRangeByName('date').setValue(new Date());
+  spreadsheet.getRangeByName('account_id').setValue(AdWordsApp.currentAccount().getCustomerId());
+  spreadsheet.getRangeByName('timestamp').setValue(DAYS[now.getDay()] + ', ' + hour_count + ':00');
+  
+  Logger.log(alertStr);
+  
+  //match input hour data with adwords data
+  
+  var lagfactor = 2;
+  
+  var sendmessage = true;
+  
+  var slack_option = spreadsheet.getRangeByName('alert_slack').getValue();
+  sendmessage = (slack_option == "Yes" ? true : false);
+  
+  if (alertStr.length < 1) {sendmessage = false;}
+  
+  var str = "";
+  
+  for (var i = 0; i < alertStr.length; i++){
+    str += alertStr[i] + "\n";
+
+  }
+  
+   if (sendmessage && slack_contacts.length > 0){
+	  var hello = "Hi "
+	  for (var i = 0; i < slack_contacts.length; i++){
+			hello += "@" + slack_contacts[i] + " ";
+	}
+    hello += "\nThis is an auto-message for the " +  AdWordsApp.currentAccount().getName() + " Alert Script.\n" + str;
+	slack_sendmessage(hello);
+     Logger.log(hello);
+  }
+  
+   var email_option = spreadsheet.getRangeByName('alert_email').getValue();
+  
+   sendmessage = (email_option == "Yes" ? true : false);
+  if (sendmessage && emailAddresses.length > 0){
+  for (var x = 0; x < emailAddresses.length; x++) {
+      Logger.log(AdWordsApp.currentAccount().getName() + " " + emailAddresses[x]);
+
+      MailApp.sendEmail(emailAddresses[x],'AdWords Account ' + AdWordsApp.currentAccount().getName() + ' Alert.',  str + '\n' + REPORT_SPREADSHEET_URL);
+    }
+
+  }
+  
+  return;
+
+}
+function HourOfDaySort(a, b) {
+  return (parseFloat(a.HourOfDay) < parseFloat(b.HourOfDay)) ? -1 : 1;
+}
+
+function hourSort(a, b) {
+  return (parseFloat(a.hour) < parseFloat(b.hour)) ? -1 : 1;
+}
+
+function hourStatObject(hour, cost, clicks, conv){
+ this.hour = hour;
+ this.cost = cost;
+ this.conv = conv;
+ this.clicks = clicks;
+}
+
+function AWDate(){
+  this.hour = 0; 
+  this.dd = 0; 
+  this.mm = 0; 
+  this.yyyy = 0;
+
+  this.getUKDateStr = function() {
+    var y = this.yyyy;
+    var m = (this.mm < 10 ? "0" + this.mm.toString() : this.mm.toString());
+    var d = (this.dd < 10 ? "0" + this.dd.toString() : this.dd.toString());
+    var h = (this.hour < 10 ? "0" + this.hour.toString() : this.hour.toString());
+    return "y" + y + "m" + m + "d" + d + "h" + h;
+  };
+  
+  this.formatDate = function(idate,ihour){
+    // var tdate = Date.parse(idate);
+     var date = new Date(idate);
+    
+      this.hour = 0;  this.dd = 0; this.mm = 0; this.yyyy = 0;
+    
+      this.hour = parseInt(ihour);
+      this.dd = date.getDate();
+      this.mm = date.getMonth() + 1; //month 0 - 11;
+      this.yyyy = date.getYear();
+    return this;
+  };
+}
+
+function slack_sendmessage(message) {
+  var slack = new SlackAPI({
+    webhookUrl : "https://hooks.slack.com/services/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" 
+  });
+  if (AdWordsApp.getExecutionInfo().isPreview()){
+    message += " NOTE: this is a message from a preview run and no changes have been made :brill:";
+  }
+  slack.sendMessage({
+    channel: "#adwords_scripts", 
+    username: "adwords-bot", 
+    text: message, 
+    icon_emoji: ":ghost:"
+  });
+}
+
+function SlackAPI(config) {
+  this.webhookUrl = config.webhookUrl;
+
+  // Send a message to slack. The config can 
+  // be as simple as a string or an object
+  // for passing more complex messages.
+  this.sendMessage = function(config) {
+    if(typeof config == 'object') {
+      postToSlack(this.webhookUrl, config);
+    } else {
+      postToSlack(this.webhookUrl, { text : config });
+    }
+  };
+  
+  // Take care of all the messy stuff like
+  // retries and status codes.
+  function postToSlack(url, payload) {
+    var options = {
+      method: 'POST',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    var retries = 3;
+    while(retries > 0) {
+      try {
+        var resp = UrlFetchApp.fetch(url,options);
+        if(resp.getResponseCode() == 200) {
+          return true;
+        } else {
+          Logger.log(
+            Utilities.formatString(
+              "WARNING: Slack returned status code of %s and a message of: %s",
+              resp.getResponseCode(),
+              resp.getContentText()
+            )
+          );
+          Logger.log('Waiting 1 seconds then retrying...');
+          Utilities.sleep(1000);
+          retries--;
+        }
+      } catch(e) {
+        Logger.log("ERROR: Something failed in UrlFetchApp. Retrying in 1 second...");
+        Utilities.sleep(1000);
+        retries--;
+      }
+    }
+    throw "Either UrlFetchApp is broken or the Slack Webhook is not configured properly.";
+  }
+};
+
+function numberWithCommas(x,places) {
+ return x.toFixed(places).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function toFloat(value) {
+  value = value.toString().replace(/,/g, '');
+  return parseFloat(value);
+}
+
+function parseField(value) {
+  if (value == 'No alert') {
+    return null;
+  } else {
+    return toFloat(value);
+  }
+}
